@@ -76,6 +76,7 @@ import Agda.TypeChecking.Monad
 import Agda.TypeChecking.Irrelevance
 import Agda.TypeChecking.Reduce
 import Agda.TypeChecking.Substitute
+import Agda.TypeChecking.Telescope
 import Agda.TypeChecking.Pretty hiding ((<>))
 
 import Agda.Utils.Function
@@ -102,7 +103,7 @@ computeForcingAnnotations t =
   -- Instantiation also fixes Issue 1454.
   -- Note that normalization of s0 below does not help.
   t <- instantiateFull t
-  let TelV tel (El _ a) = telView' t
+  TelV tel (El _ a) <- telView'Path t -- TODO this is doing reduce on t, previous code wasn't: telView' t
   -- Ulf, 2018-01-28 (#2919): We do need to reduce the target type enough to
   -- get to the actual data type.
   a <- reduce a
