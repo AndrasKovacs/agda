@@ -239,6 +239,7 @@ unforce q (p : ps) =
         (qs', ps') = splitAt (length qs) qps
     LitP{} -> p : unforce q ps
     ProjP{} -> p : unforce q ps
+    IApplyP o t u y -> fmap (mkDot q (IApplyP o t u y) <$) p : unforce q ps
   where
     -- Turn a match on q into a dot pattern
     mkDot :: DeBruijnPattern -> DeBruijnPattern -> DeBruijnPattern
@@ -249,6 +250,7 @@ unforce q (p : ps) =
       ConP c i ps     -> ConP c i $ (fmap . fmap . fmap) (mkDot q) ps
       LitP{}          -> p
       ProjP{}         -> p
+      IApplyP{}       -> p
 
     p =:= q = patternToElim (defaultArg p) == patternToElim (defaultArg q)
 
@@ -285,3 +287,4 @@ forcedPatterns ps = concat <$> mapM (forced NotForced . namedArg) ps
             concat <$> zipWithM forced (fs ++ repeat NotForced) (map namedArg args)
         LitP{}    -> return []
         ProjP{}   -> return []
+        IApplyP{}  -> return [p | f == Forced]
