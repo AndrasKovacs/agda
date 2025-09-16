@@ -5,7 +5,6 @@ module Agda.Interaction.BasicOps where
 
 import Prelude hiding (null)
 
-import Control.Arrow          ( first )
 import Control.Monad.Except   ( MonadError(..) )
 import Control.Monad.State    ( MonadState(..), evalState )
 import Control.Monad.Identity ( runIdentity )
@@ -16,6 +15,7 @@ import qualified Data.IntMap as IntMap
 import qualified Data.Map.Strict as MapS
 import qualified Data.Set as Set
 import qualified Data.List as List
+import Data.Bifunctor (first, second)
 import Data.Maybe
 import Data.Monoid
 import Data.Function (on)
@@ -33,6 +33,7 @@ import Agda.Syntax.Abstract as A hiding (Open, Apply, Assign)
 import Agda.Syntax.Abstract.Views as A
 import Agda.Syntax.Abstract.Pretty
 import Agda.Syntax.Common
+import Agda.Syntax.Concrete.Operators (parseApplication)
 import Agda.Syntax.Info (MetaInfo(..),emptyMetaInfo,exprNoRange,defaultAppInfo_,defaultAppInfo)
 import qualified Agda.Syntax.Info as Info
 import Agda.Syntax.Internal as I
@@ -341,9 +342,19 @@ normalForm = \case
   Simplified   -> simplify
   Normalised   -> normalise
 
--- | Modifier for the interactive computation command,
---   specifying the mode of computation and result display.
---
+-- | Evaluate the given expression in the current environment
+--   with allowed reductions modified according to 'ComputeMode'.
+computeInCurrent :: ComputeMode -> Expr -> TCM Expr
+computeInCurrent cmode e =
+  withComputeIgnoreAbstract cmode $ evalInCurrent cmode e
+
+-- | Modify the allowed reductions according to 'ComputeMode'.
+{-# SPECIALIZE withComputeIgnoreAbstract :: ComputeMode -> TCM a -> TCM a #-}
+withComputeIgnoreAbstract :: MonadTCEnv m => ComputeMode -> m a -> m a
+withComputeIgnoreAbstract cmode =
+  applyWhen (computeIgnoreAbstract cmode) $
+    allowNonTerminatingReductions . ignoreAbstractMode
+
 computeIgnoreAbstract :: ComputeMode -> Bool
 computeIgnoreAbstract DefaultCompute  = False
 computeIgnoreAbstract HeadCompute     = False
@@ -617,9 +628,6 @@ prettyConstraints cs = do
             cl <- reify (PConstr Set.empty alwaysUnblock c)
             enterClosure cl abstractToConcrete_
 
-getConstraints :: TCM [OutputForm C.Expr C.Expr]
-getConstraints = getConstraints' return $ const True
-
 namedMetaOf :: OutputConstraint A.Expr a -> a
 namedMetaOf (OfType i _) = i
 namedMetaOf (JustType i) = i
@@ -720,13 +728,14 @@ interactionIdToMetaId i = do
     , metaModule = h
     }
 
-getConstraints' :: (ProblemConstraint -> TCM ProblemConstraint) -> (ProblemConstraint -> Bool) -> TCM [OutputForm C.Expr C.Expr]
-getConstraints' g f = liftTCM $ do
-    cs <- stripConstraintPids . filter f <$> (mapM g =<< M.getAllConstraints)
-    cs <- forM cs $ \c -> do
-            cl <- reify c
+-- | Get meta solutions and constraints.
+getConstraints :: Rewrite -> TCM [OutputForm C.Expr C.Expr]
+getConstraints norm = do
+    cs <- stripConstraintPids <$> M.getAllConstraints
+    cs <- forM cs \ (c :: ProblemConstraint) -> do
+            cl <- reify =<< normalForm norm c
             enterClosure cl abstractToConcrete_
-    ss <- mapM toOutputForm =<< getSolvedInteractionPoints True AsIs -- get all
+    ss <- mapM toOutputForm =<< getSolvedInteractionPoints True norm -- get all
     return $ ss ++ cs
   where
     toOutputForm (ii, mi, e) = do
@@ -734,7 +743,8 @@ getConstraints' g f = liftTCM $ do
       withMetaInfo mv $ do
         mi <- interactionIdToMetaId ii
         let m = QuestionMark emptyMetaInfo{ metaNumber = Just mi } ii
-        let oform = OutputForm noRange [] alwaysUnblock $ Assign m e :: OutputForm Expr Expr
+        let oform :: OutputForm Expr Expr
+            oform = OutputForm noRange [] alwaysUnblock $ Assign m e
         abstractToConcrete_ oform
 
 -- | Reify the boundary of an interaction point as something that can be
@@ -945,12 +955,21 @@ typesOfHiddenMetas norm = liftTCM $ do
       M.PostponedTypeCheckingProblem{} -> False
 
 -- | Create type of application of new helper function that would solve the goal.
-metaHelperType :: Rewrite -> InteractionId -> Range -> String -> TCM (OutputConstraint' Expr Expr)
-metaHelperType norm ii rng s = case words s of
-  []    -> failure
-  f : _ -> withInteractionId ii $ do
-    ensureName f
-    A.Application h args <- A.appView . getBody . deepUnscope <$> parseExprIn ii rng ("let " ++ f ++ " = _ in " ++ s)
+metaHelperType :: Rewrite -> InteractionId -> Range -> String -> TCM (OutputConstraint' Expr C.Name)
+metaHelperType norm ii rng s = withInteractionId ii do
+    -- Parse the raw application.
+    ce <- parseExpr rng s
+    -- Operator-parse into simple application of @h@ to @cargs@.
+    (h, cargs) <- applicationView [] ce
+    -- Scope check arguments
+    args <- mapM (fmap deepUnscope . concreteToAbstract_) cargs
+      -- Andreas, 2025-09-14:
+      -- The 'deepUnscope' has been taken from the previous version of the implementation.
+      -- Removing it changes the way the type of the helper function is printed,
+      -- sometimes for the better, sometimes for the worse.
+      -- TODO: investigate why and how this 'deepUnscope' affects the printing,
+      -- and whether we should remove it here.
+
     inCxt   <- hasElem <$> getContextNames
     cxtArgs <- getContextArgs
     enclosingFunctionName <- ipcQName . envClause <$> getEnv
@@ -1012,11 +1031,18 @@ metaHelperType norm ii rng s = case words s of
       return $ OfType' h a
   where
     failure = interactionError ExpectedApplication
-    ensureName f = do
-      ce <- parseExpr rng f
-      flip (caseMaybe $ isName ce) (\ _ -> return ()) $ do
-         reportSLn "interaction.helper" 10 $ "ce = " ++ show ce
-         failure
+
+    -- An application view for concrete expressions that rejects operator applications.
+    applicationView :: [NamedArg C.Expr] -> C.Expr -> TCM (C.Name, [NamedArg C.Expr])
+    applicationView acc = \case
+      C.Ident (C.QName x) -> return (x, reverse acc)
+      C.App _ e e1        -> applicationView (e1 : acc) e
+      C.RawApp _ es       -> applicationView acc =<< parseApplication es
+      C.Paren _ e         -> applicationView acc e
+      -- Allowing operator applications would not make sense.
+      -- C.OpApp _ x _ args -> failure
+      _ -> failure
+
     isVar :: A.Expr -> Maybe A.Name
     isVar = \case
       A.Var x -> Just x
@@ -1333,7 +1359,9 @@ atTopLevel m = inConcreteMode $ do
         , "  types = " TP.<+> TP.sep (map prettyTCM types)
         ]
       M.withCurrentModule current $
-        withScope_ scope $
+        evalWithScope scope $ do
+          -- András, 2025-08-30: building fresh scope from interface
+          recomputeInverseScope
           addContext gamma $ do
             -- We're going inside the top-level module, so we have to set the
             -- checkpoints for it and all its submodules to the new checkpoint.

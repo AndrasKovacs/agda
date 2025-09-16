@@ -502,8 +502,8 @@ interpret (Cmd_backend_top backend cmd) =
 interpret (Cmd_backend_hole ii rng s backend cmd) =
   callBackendInteractHole (getBackendName backend) cmd ii rng s
 
-interpret Cmd_constraints =
-  display_info . Info_Constraints =<< lift B.getConstraints
+interpret (Cmd_constraints norm) =
+  display_info . Info_Constraints =<< lift (B.getConstraints norm)
 
 interpret (Cmd_metas norm) = do
   ms <- lift $ B.getGoals' norm (max Simplified norm)
@@ -537,22 +537,6 @@ interpret (Cmd_infer_toplevel norm s) = do
   (time, expr) <- parseAndDoAtToplevel (B.typeInCurrent norm) s
   state <- get
   display_info $ Info_InferredType state time expr
-
-interpret (Cmd_compute_toplevel cmode s) = do
-  (time, expr) <- parseAndDoAtToplevel action (B.computeWrapInput cmode s)
-  state <- get
-  display_info $ Info_NormalForm state cmode time expr
-    where
-    action = allowNonTerminatingReductions
-           . (if B.computeIgnoreAbstract cmode then ignoreAbstractMode else inConcreteMode)
-           . B.evalInCurrent cmode
--- interpret (Cmd_compute_toplevel cmode s) =
---   parseAndDoAtToplevel action Info_NormalForm $ computeWrapInput cmode s
---   where
---   action = allowNonTerminatingReductions
---          . (if computeIgnoreAbstract cmode then ignoreAbstractMode else inConcreteMode)
---          . (B.showComputed cmode <=< B.evalInCurrent)
-
 
 interpret (ShowImplicitArgs showImpl) = do
   opts <- lift commandLineOptions
@@ -706,7 +690,7 @@ interpret (Cmd_context norm ii _ _) =
 
 interpret (Cmd_helper_function norm ii rng s) = do
   -- Create type of application of new helper function that would solve the goal.
-  helperType <- liftLocalState $ withInteractionId ii $ inTopContext $ B.metaHelperType norm ii rng s
+  helperType <- liftLocalState $ B.metaHelperType norm ii rng s
   display_info $ Info_GoalSpecific ii (Goal_HelperFunction helperType)
 
 interpret (Cmd_infer norm ii rng s) = do
@@ -777,11 +761,15 @@ interpret (Cmd_make_case ii rng s) = do
       ]
     putResponse $ Resp_MakeCase ii (makeCaseVariant casectxt) pcs'
 
+interpret (Cmd_compute_toplevel cmode s) = do
+  (time, expr) <- parseAndDoAtToplevel (B.computeInCurrent cmode) (B.computeWrapInput cmode s)
+  state <- get
+  display_info $ Info_NormalForm state cmode time expr
 
 interpret (Cmd_compute cmode ii rng s) = do
   expr <- liftLocalState $ do
     e <- B.parseExprIn ii rng $ B.computeWrapInput cmode s
-    withInteractionId ii $ applyWhen (B.computeIgnoreAbstract cmode) ignoreAbstractMode $ B.evalInCurrent cmode e
+    withInteractionId ii $ B.computeInCurrent cmode e
   display_info $ Info_GoalSpecific ii (Goal_NormalForm cmode expr)
 
 interpret Cmd_show_version = display_info Info_Version
