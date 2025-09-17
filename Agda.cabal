@@ -681,8 +681,8 @@ library
       Agda.Syntax.Position
       Agda.Syntax.Reflected
       Agda.Syntax.Scope.Base
-      Agda.Syntax.Scope.Flat
       Agda.Syntax.Scope.Monad
+      Agda.Syntax.Scope.Operator
       Agda.Syntax.TopLevelModuleName
       Agda.Syntax.TopLevelModuleName.Boot
       Agda.Syntax.Translation.AbstractToConcrete
@@ -917,6 +917,8 @@ library
       Agda.Utils.Singleton
       Agda.Utils.Size
       Agda.Utils.SmallSet
+      Agda.Utils.StrictState
+      Agda.Utils.StrictState2
       Agda.Utils.String
       Agda.Utils.Suffix
       Agda.Utils.Three

@@ -110,9 +110,14 @@ data Phase
     -- ^ Subphase for 'InstanceSearch': reducing overlapping instances
   | UnifyIndices
     -- ^ Subphase for 'CheckLHS': unification of the indices
-  | InverseScopeLookup
-    -- ^ Pretty printing names.
+  | InverseNameLookup
+  | InverseModuleLookup
+  | InverseInScope
+  | InverseNameModuleRecompute
+  | InverseInScopeRecompute
   | TopModule TopLevelModuleName
+  | CubicalLeftInversion
+    -- ^ Generating left inverses in LHS unification in cubical or cubical-compatible mode.
   | Typeclass QName
   | Definition QName
   deriving (Eq, Ord, Show, Generic)
